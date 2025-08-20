@@ -1,0 +1,80 @@
+name: Pyinstaller package
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build & Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        # ubuntu-24.04
+        os: [ubuntu-22.04, windows-latest]
+
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        #python-version: '>=3.9 <3.14'
+        python-version: '3.9'
+
+    - name: Install
+      run: |
+        python3 -m pip install --upgrade pip
+        python3 -m pip install numpy
+        python3 -m pip install pandas
+        python3 -m pip install pyinstaller
+        python3 -m pip install .
+
+    - name: Verify Installations
+      run: |
+        python3 -m pip show tdr_plots
+
+    - name: Make plot executable
+      uses: sayyid5416/pyinstaller@v1
+      with:
+        spec: '${GITHUB_WORKSPACE}/pyinstaller.spec'
+        upload_exe_with_name: 'monitor_tdr-${{ matrix.os }}'
+        python_ver: '3.9'
+
+  release:
+    strategy:
+      matrix:
+            os: [ubuntu-22.04, windows-latest]
+
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Needed to create a release
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: 'isp-programmer-${{ matrix.os }}'
+          path: output
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: 'calibration_gui-${{ matrix.os }}'
+          path: output
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: 'monitor_tdr-${{ matrix.os }}'
+          path: output
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: output/*
+          token: ${{ secrets.GITHUB_TOKEN }}
