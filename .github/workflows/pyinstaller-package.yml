@@ -1,5 +1,4 @@
 name: Pyinstaller package
-
 on:
   push:
     tags:
