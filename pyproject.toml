@@ -1,0 +1,49 @@
+[project]
+name = "tdr_plots"
+version = "0.1.0"
+description='Plotting and live view of TDR'
+authors = [
+    {name = "Simon Hobbs", email = "simon.hobbs@electrooptical.net"},
+]
+readme = "README.md"
+
+requires-python = ">=3.9"
+keywords = []
+classifiers = [
+    "Programming Language :: Python :: 3",
+]
+
+dependencies = [
+  "matplotlib",
+  "mplcursors",
+  "click",
+  "scipy>=1.5.2",
+  "numpy>=1.26.0",
+  "pandas>=2.0.0",
+  "pyserial>=3.3",
+  "pyvisa>=1.14.0",
+  "pyvisa-py>=0.7.0",
+  "pydantic>=2.0.0",
+]
+
+
+[project.scripts]
+monitor_tdr = "tdr_plots.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src", "src/tdr_plots"]
+
+[tool.pylint]
+max-line-length = 200
+disable = [
+    "C0103", # (invalid-name)
+    "C0114", # (missing-module-docstring)
+    "C0115", # (missing-class-docstring)
+    "C0116", # (missing-function-docstring)
+    "R0903", # (too-few-public-methods)
+    "R0913", # (too-many-arguments)
+    "W0105", # (pointless-string-statement)
+    "C0301",
+    "W1203",
+    "C0209"
+]
