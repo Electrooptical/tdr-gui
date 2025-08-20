@@ -124,8 +124,8 @@ class Scope:
         """Clear all annotations."""
         for annotation in self.annotations:
             annotation.remove()  # Remove annotations from the plot
-            self.annotations = []  # Clear the annotations list
-            plt.draw()
+        self.annotations = []  # Clear the annotations list
+        plt.draw()
 
     def store(self, *args):
         # self.stored_lines.append(copy.deepcopy(self.line))
@@ -143,8 +143,8 @@ class Scope:
         for line in self.stored_lines:
             line.remove()  # Remove the stored lines from the plot
             del line
-            self.stored_lines = []  # Clear the stored lines list
-            plt.draw()
+        self.stored_lines = []  # Clear the stored lines list
+        plt.draw()
 
     def update(self, frame):
         log_.debug("update %d", frame)
@@ -200,7 +200,8 @@ class EmitterThread:
 
     def trace_thread(self):
         while not self.stop_event.is_set():
-            trace = control.take_trace(self.device, npoints=self.settings.npoints)
+            trace = control.take_trace(
+                self.device, npoints=self.settings.npoints)
             trace = [int(pt) for pt in trace]
             log_.debug(trace)
             self.data_queue.put(trace)
