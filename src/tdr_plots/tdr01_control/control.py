@@ -19,7 +19,7 @@ class Device:
         self.resource = resource
         self.baudrate = baudrate
         self.rm = pyvisa.ResourceManager()
-        self.dev = None
+        self.dev: pyvisa.Resource = None
         self.timeout = timeout
 
     def __enter__(self):
@@ -63,7 +63,7 @@ class Device:
         self.flush()
 
 
-def take_trace(device, npoints=None, command="TRACE") -> List[int]:
+def take_trace(device: Device, npoints=None, command="TRACE") -> List[int]:
     d = device.dev.query_ascii_values(command, converter="d", separator=",")
     if npoints:
         assert len(d) == npoints
@@ -155,6 +155,7 @@ def take_traces(
                 break
             except TimeoutError as e:
                 log_.error(e)
-        trace = Trace(rxdac=rxpoints, trace=trace_data, settings=dict(settings))
+        trace = Trace(rxdac=rxpoints, trace=trace_data,
+                      settings=dict(settings))
         traces.append(trace)
     return traces

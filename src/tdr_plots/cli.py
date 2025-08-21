@@ -10,6 +10,8 @@ from .tdr01_control.common import TraceSettings, RampModel
 from .tdr01_control.control import Device, take_trace
 from .live_plot import run_monitor_plot
 
+BAUDRATE = 115200
+
 
 class Setup(BaseModel):
     baudrate: int = 115200
@@ -96,11 +98,14 @@ def list_serial_ports():
 @click.option("--start_time", type=float, default=0)
 @click.option("--rc", type=float, default=None)
 @click.option("--m", type=float, default=None)
+@click.option("--dummy", is_flag=True)
 @click.option(
     "--sleep", "sleep_time", type=float, default=2, help="Sleep time in between traces"
 )
 @click.command()
-def cli_main(device_str, maxtime, spacing, ramp_mode, start_time, rc, m, sleep_time):
+def cli_main(
+    device_str, maxtime, spacing, ramp_mode, start_time, rc, m, dummy, sleep_time
+):
     logging.basicConfig()
     logging.getLogger().setLevel(logging.INFO)
     log_.setLevel(logging.DEBUG)
@@ -130,17 +135,21 @@ def cli_main(device_str, maxtime, spacing, ramp_mode, start_time, rc, m, sleep_t
         npoints=npoints,
     )
 
+    if dummy:
+        run_monitor_plot(settings=settings, rxdac=None, device=None)
+        return
+
     assert settings.npoints == npoints
     resource = f"ASRL{device_str}::INSTR"
-    baudrate = 115200
-    with Device(baudrate=baudrate, resource=resource) as device:
+    with Device(baudrate=BAUDRATE, resource=resource) as device:
         header = setup(
             device=device,
             settings=settings,
             set_timing=((rc is not None) or (m is not None)),
         )
         log_.info(f"header: {header}")
-        rxdac = take_trace(device=device, command="RXDAC?", npoints=settings.npoints)
+        rxdac = take_trace(device=device, command="RXDAC?",
+                           npoints=settings.npoints)
         run_monitor_plot(settings=settings, rxdac=rxdac, device=device)
 
 

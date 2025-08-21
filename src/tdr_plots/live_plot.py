@@ -20,24 +20,26 @@ from matplotlib import animation
 from matplotlib.lines import Line2D
 from matplotlib.ticker import MaxNLocator
 import mplcursors
-import matplotlib.pyplot as plt
 
 
-print(plt.style.available)
 plt.style.use(["dark_background"])  # , "presentation"])
-
-
-log_ = logging.getLogger("live_plot")
-
 _FRAME_TITLE = "ElectroOptical Innovations: TDR01 Time Domain Reflectometer"
+BUTTON_COLOR = "grey"
+BUTTON_HOVER_COLOR = "skyblue"
+GRID_COLOR = (0, 1, 0, 0.1)
+CURSOR_COLOR = (0, 1, 0, 0.75)
+TRACE_COLOR = (0, 1, 0, 0.75)
+LABEL_FONTSIZE = 12
+
+log_ = logging.getLogger("monitor_tdr")
 
 
 def create_styled_button(
     ax,
     label,
     on_click_function,
-    color="lightblue",
-    hover_color="skyblue",
+    color=BUTTON_COLOR,
+    hover_color=BUTTON_HOVER_COLOR,
 ):
     """Create a styled button with hover effect and custom color."""
     button = Button(ax, label)
@@ -45,7 +47,7 @@ def create_styled_button(
     # Set button style
     button.color = color
     button.hovercolor = hover_color
-    button.label.set_fontsize(12)  # Set font size
+    button.label.set_fontsize(10)  # Set font size
     button.label.set_fontweight("bold")  # Make font bold
     button.label.set_color("black")  # Set text color
     button.label.set_wrap(True)
@@ -100,7 +102,7 @@ def get_filename() -> Union[str, None]:
 
 class EmitterThread:
     def __init__(self, device: Device, data_queue, settings: TraceSettings, **kwargs):
-        self.device = device
+        self.device: Device = device
         self.data_queue = data_queue
         self.settings = settings
         self.sleep_time = kwargs.get("sleep_time", 0)
@@ -108,6 +110,10 @@ class EmitterThread:
         self.stop_event = threading.Event()
 
     def trace_thread(self):
+        if self.device is None:
+            while not self.stop_event.is_set():
+                self.dummy_thread()
+
         while not self.stop_event.is_set():
             trace = control.take_trace(self.device, npoints=self.settings.npoints)
             trace = [int(pt) for pt in trace]
@@ -117,17 +123,13 @@ class EmitterThread:
 
     def dummy_thread(self):
         """Simulate data reading from a serial port in a separate thread."""
-        for _ in range(10):
-            # Simulate delay for reading from serial port (10Hz rate)
-            time.sleep(1)
-
-            # Simulate reading a random value (replace with serial read)
-            trace = [
-                int(1 << 16) * random.random() for _ in range(self.settings.npoints)
-            ]
-            # Put data into the queue (either a real serial read or simulated data)
-            self.data_queue.put(trace)
-            # data_queue.put('x')  # Put data into the queue (either a real serial read or simulated data)
+        # Simulate delay for reading from serial port (10Hz rate)
+        time.sleep(1)
+        # Simulate reading a random value (replace with serial read)
+        trace = [int(1 << 15) * random.random() for _ in range(self.settings.npoints)]
+        # Put data into the queue (either a real serial read or simulated data)
+        self.data_queue.put(trace)
+        # data_queue.put('x')  # Put data into the queue (either a real serial read or simulated data)
 
     def stop(self):
         if self.thread is not None and self.thread.is_alive():
@@ -174,7 +176,7 @@ class Scope:
         # Queue to get data from the emitter thread
         self.data_queue = data_queue
         self.annotations = []  # List to store annotations
-        self.ax.grid(True, color=(0, 1, 0, 0.1), linestyle="--", linewidth=0.5)
+        self.ax.grid(True, color=GRID_COLOR, linestyle="--", linewidth=0.5)
         self.plot_volts = False
         self.ax.callbacks.connect("xlim_changed", self.on_xlim_change)
 
@@ -208,10 +210,10 @@ class Scope:
             xspan = max(xlim) - min(xlim)
             self.cursor_lines = [
                 self.ax.axvline(
-                    min(xlim) + xspan * 0.25, color="lightgreen", linestyle="--", lw=1.5
+                    min(xlim) + xspan * 0.25, color=CURSOR_COLOR, linestyle="--", lw=1.5
                 ),
                 self.ax.axvline(
-                    min(xlim) + xspan * 0.75, color="lightgreen", linestyle="--", lw=1.5
+                    min(xlim) + xspan * 0.75, color=CURSOR_COLOR, linestyle="--", lw=1.5
                 ),
             ]
             self.cursor_text = self.ax.text(
@@ -246,7 +248,7 @@ class Scope:
         (stored_line,) = self.ax.plot(
             self.line.get_xdata(),
             self.line.get_ydata(),
-            ".",
+            ".--",
             label=f"Stored Trace {len(self.stored_lines)}",
         )
         self.stored_lines.append(stored_line)
@@ -273,13 +275,13 @@ class Scope:
 
         if self.plot_volts:
             t = self.rxdac
-            self.ax.set_xlabel("Ramp DAC Setting")
+            self.ax.set_xlabel("Ramp DAC Setting", fontsize=LABEL_FONTSIZE)
         else:
             t = np.array(range(len(y))) * self.dt
-            self.ax.set_xlabel("Time (ps)")
+            self.ax.set_xlabel("Time (ps)", fontsize=LABEL_FONTSIZE)
 
         self.line.set_data(t, y)
-        self.line.set_color((0, 1, 0, 0.6))
+        self.line.set_color(TRACE_COLOR)
         if self.xlim is None:
             self.xlim = [0, max(t) + abs(max(t)) / 50]
             self.ax.set_xlim(*self.xlim)
@@ -293,10 +295,7 @@ class Scope:
 
         for line in self.stored_lines + [self.line]:
             y = line.get_ydata()
-            if self.plot_volts:
-                t = self.rxdac
-            else:
-                t = np.array(range(len(y))) * self.dt
+            t = self.rxdac if self.plot_volts else np.asarray(range(len(y))) * self.dt
             line.set_xdata(t)
 
         if self.xlim is None:
@@ -374,16 +373,13 @@ def run_monitor_plot(settings: TraceSettings, rxdac: List[int], device: Device):
 
     fig, ax = plt.subplots()
     fig.canvas.mpl_connect("close_event", handle_close)
-    ax.set_ylabel("RX Volts")
-    ax.set_xlabel("Offset Time (ps)")
+    ax.set_ylabel("RX Volts", fontsize=LABEL_FONTSIZE)
+    # ax.set_xlabel("Offset Time (ps)", fontsize=LABEL_FONTSIZE)
 
     scope = Scope(
         ax, dt=settings.spacing, settings=settings, rxdac=rxdac, data_queue=data_queue
     )
     # Start the emitter thread to simulate serial data reading
-
-    device.flush()
-    assert device.dev
 
     # Enable multiple points selection
     cursor = mplcursors.cursor(scope.line, hover=False, multiple=True)
@@ -443,7 +439,7 @@ def run_monitor_plot(settings: TraceSettings, rxdac: List[int], device: Device):
     #  the animation has to be set as a variable
     try:
         ani = animation.FuncAnimation(
-            fig, scope.update, interval=10, blit=False, save_count=1000
+            fig, scope.update, interval=200, blit=False, save_count=1000
         )
         plt.show()
     except Exception as e:
