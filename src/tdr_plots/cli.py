@@ -1,3 +1,4 @@
+import time
 from typing import Optional
 import logging
 import serial
@@ -61,7 +62,12 @@ def setup(device, settings: TraceSettings, set_timing: bool = False):
 
     header = {}
 
+    time.sleep(0.1)
     device.flush()
+    device.write("\n\n")
+    time.sleep(0.1)
+    device.flush()
+
     for key, value in settings_list:
         command = f"{key} {value}\n"
         device.write(command)
@@ -134,8 +140,7 @@ def cli_main(device_str, maxtime, spacing, ramp_mode, start_time, rc, m, sleep_t
             set_timing=((rc is not None) or (m is not None)),
         )
         log_.info(f"header: {header}")
-        rxdac = take_trace(device=device, command="RXDAC?",
-                           npoints=settings.npoints)
+        rxdac = take_trace(device=device, command="RXDAC?", npoints=settings.npoints)
         run_monitor_plot(settings=settings, rxdac=rxdac, device=device)
 
 
