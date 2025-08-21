@@ -3,10 +3,10 @@ timing_model.py: Functions for calculating the timing using the
 exponential plus linear timing model.
 """
 
-from pydantic import BaseModel, Field, AliasChoices, model_validator
 import logging
-from typing import Dict, List
+from typing import List
 from dataclasses import dataclass
+from pydantic import BaseModel, Field, AliasChoices, model_validator
 import numpy as np
 
 log_ = logging.getLogger("tdr_control")

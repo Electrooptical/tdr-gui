@@ -3,11 +3,11 @@ import logging
 import serial
 import serial.tools.list_ports
 import click
-from tdr01_control.common import TraceSettings, RampModel
-from tdr01_control.control import Device, take_trace
-
-from tdr_plots.live_plot import run_monitor_plot
 from pydantic import BaseModel
+
+from .tdr01_control.common import TraceSettings, RampModel
+from .tdr01_control.control import Device, take_trace
+from .live_plot import run_monitor_plot
 
 
 class Setup(BaseModel):
@@ -142,7 +142,8 @@ def cli_main(device_str, maxtime, spacing, ramp_mode, start_time, rc, m, sleep_t
 def main():
     try:
         cli_main()
-    except serial.serialutil.SerialException:
+    except serial.serialutil.SerialException as e:
+        click.echo(f"Serial Exception: Is the port correct? {e}")
         pass
 
 

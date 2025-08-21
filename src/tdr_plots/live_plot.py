@@ -4,9 +4,10 @@ import queue
 import time
 import random
 import threading
-import math
 import csv
 from datetime import datetime
+import tkinter as tk
+from tkinter import filedialog
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -14,17 +15,16 @@ from matplotlib.widgets import Button
 from matplotlib import animation
 from matplotlib.lines import Line2D
 from matplotlib.ticker import MaxNLocator
-import tkinter as tk
-from tkinter import filedialog
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import mplcursors
 
-from tdr01_control import control
-from tdr01_control.control import Device
-from tdr01_control.common import Adc
-from tdr01_control.common import TraceSettings
+from .tdr01_control import control
+from .tdr01_control.control import Device
+from .tdr01_control.common import Adc
+from .tdr01_control.common import TraceSettings
 
 log_ = logging.getLogger("live_plot")
+
+_FRAME_TITLE = "ElectroOptical Innovations: TDR01 Time Domain Reflectometer"
 
 
 def create_styled_button(
@@ -33,8 +33,6 @@ def create_styled_button(
     on_click_function,
     color="lightblue",
     hover_color="skyblue",
-    width=0.1,
-    height=0.075,
 ):
     """Create a styled button with hover effect and custom color."""
     button = Button(ax, label)
@@ -87,10 +85,9 @@ class Scope:
         self.ax.add_line(self.line)
         self.default_ylim = (1, 3)
         self.ax.set_ylim(*self.default_ylim)
-        # self.ax.set_ylim(-0.1, 4095*2)
         self.xlim = None
-        # self.ax.set_xlim(0, 1)
-        self.data_queue = data_queue  # Queue to get data from the emitter thread
+        # Queue to get data from the emitter thread
+        self.data_queue = data_queue
         self.annotations = []  # List to store annotations
         self.ax.grid()
         self.plot_volts = False
@@ -142,7 +139,8 @@ class Scope:
         """Clear all stored traces."""
         for line in self.stored_lines:
             line.remove()  # Remove the stored lines from the plot
-            del line
+
+        # del line
         self.stored_lines = []  # Clear the stored lines list
         plt.draw()
 
@@ -177,7 +175,6 @@ class Scope:
 
     def on_xlim_change(self, ax):
         """Update the X-ticks when the X-axis limits change (due to zoom)."""
-        xlim = ax.get_xlim()  # Get current x limits
         # spacing = 10**(math.ceil(math.log(max(xlim)-min(xlim), 10)))/100
         # while (max(xlim)-min(xlim))/spacing > 30:
         #    spacing *= 2  # Ensure enough space between ticks
@@ -300,6 +297,7 @@ def run_monitor_plot(settings: TraceSettings, rxdac: List[int], device: Device):
         )
 
     manager = plt.get_current_fig_manager()
+    manager.set_window_title(_FRAME_TITLE)
 
     root = tk.Tk()
     screen_width = root.winfo_screenwidth()

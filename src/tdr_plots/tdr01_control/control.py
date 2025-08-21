@@ -1,8 +1,8 @@
 # control.py: Low level device control helper functions
 import logging
 import time
-import pyvisa
 from typing import List
+import pyvisa
 
 from .common import (
     Trace,
