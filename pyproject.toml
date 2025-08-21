@@ -1,6 +1,6 @@
 [project]
 name = "tdr_plots"
-version = "0.1.0"
+version = "0.1.2"
 description='Plotting and live view of TDR'
 authors = [
     {name = "Simon Hobbs", email = "simon.hobbs@electrooptical.net"},
