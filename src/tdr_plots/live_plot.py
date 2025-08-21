@@ -357,10 +357,25 @@ class Scope:
 
 
 def run_monitor_plot(settings: TraceSettings, rxdac: List[int], device: Device):
+    data_queue = queue.Queue()
+    emitter_thread = EmitterThread(
+        data_queue=data_queue, settings=settings, device=device
+    )
+
+    def handle_close(event):
+        log_.info("Matplotlib window closing, stopping emitter thread…")
+        if (
+            emitter_thread
+            and emitter_thread.thread
+            and emitter_thread.thread.is_alive()
+        ):
+            emitter_thread.stop()
+        plt.close("all")
+
     fig, ax = plt.subplots()
+    fig.canvas.mpl_connect("close_event", handle_close)
     ax.set_ylabel("RX Volts")
     ax.set_xlabel("Offset Time (ps)")
-    data_queue = queue.Queue()
 
     scope = Scope(
         ax, dt=settings.spacing, settings=settings, rxdac=rxdac, data_queue=data_queue
@@ -369,9 +384,6 @@ def run_monitor_plot(settings: TraceSettings, rxdac: List[int], device: Device):
 
     device.flush()
     assert device.dev
-    emitter_thread = EmitterThread(
-        data_queue=data_queue, settings=settings, device=device
-    )
 
     # Enable multiple points selection
     cursor = mplcursors.cursor(scope.line, hover=False, multiple=True)
