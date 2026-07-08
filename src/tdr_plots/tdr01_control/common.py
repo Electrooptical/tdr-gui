@@ -3,11 +3,17 @@ timing_model.py: Functions for calculating the timing using the
 exponential plus linear timing model.
 """
 
+import enum
+from pydantic import BaseModel, Field, AliasChoices
+import copy
 import logging
-from typing import List
+from typing import Dict, List, Literal, Optional, Union
 from dataclasses import dataclass
-from pydantic import BaseModel, Field, AliasChoices, model_validator
+from pydantic import BaseModel, model_validator, StrictInt, StrictStr, ConfigDict
 import numpy as np
+import scipy as sp
+from pathlib import Path
+import json
 
 log_ = logging.getLogger("tdr_control")
 
@@ -63,6 +69,17 @@ class Adc:
     def to_volts(self, adc):
         return (adc / self.npoints) * self.vref
 
+    def to_adc_f(self, volts: float):
+        return volts / self.vref * self.npoints
+
+    def to_adc(self, volts: float):
+        return np.round(volts / self.vref * self.npoints)
+
+
+class Units(enum.Enum):
+    volts = 0
+    lsb = 1
+
 
 class RampModel(BaseModel):
     """
@@ -73,21 +90,6 @@ class RampModel(BaseModel):
     rc: float = 0
     bf: float = 0
     m: float = 0
-
-    def calc_time(self, v):
-        """
-        Ramp voltage to time.
-        Theres a scew in the actual time due to dv/dt on a given ramp.
-        Instead of solving the lambert function on the micro we can iterate
-        get close then step through till we get the closest dac value
-        """
-        # m = self.m
-        # t0 = self.t0
-        bf = self.bf
-        a = self.a
-        rc = self.rc
-
-        return -np.log(1 - (v - bf) / a) * rc
 
 
 @dataclass
@@ -120,7 +122,9 @@ class MeasurementParams:
 
     @property
     def rc(self):
-        return calc_rc(self.c, ra=self.ra, rb=self.rb) * 1e12  # ps
+        ra = self.ra
+        rb = self.rb
+        return self.c * (ra * rb / (rb + ra)) * 1e12  # ps
 
     def to_settings(self):
         return {
@@ -130,12 +134,100 @@ class MeasurementParams:
         }
 
 
+class TimingCoeffs(BaseModel):
+    """
+    Coefficients for an exponential ramp model with offset and slope
+    V(T) = a*(1-exp(T/rc)) + b + m*T
+    """
+
+    a: Union[float, int, None] = None
+    rc: Union[float, int, None] = None
+    bf: Union[float, int, None] = None
+    m: Union[float, int, None] = None
+
+    def is_sane(self):
+        for v in [self.rc, self.a, self.bf, self.m]:
+            try:
+                if not np.isfinite(v):
+                    return False
+            except TypeError:
+                return False
+        return True
+
+
+"""
+    ramp_a: int = 0
+    ramp_rc: int = 0
+    ramp_bf: int = 0
+    ramp_m: int = 0
+
+    @property
+    def timing_params(self) -> TimingCoeffs:
+        return TimingCoeffs(
+            a=self.ramp_a,
+            b=self.ramp_bf,
+            m=self.ramp_m,
+            rc=self.ramp_rc,
+        )
+"""
+
+
+class TimingParams(BaseModel):
+    npoints: int = 1200
+    dt_ps: float = 6
+    a: Union[float, int] = 3.3
+    rc: Union[float, int] = 0
+    bf: Union[float, int] = 0
+    m: Union[float, int] = 0
+    vbtx: Union[float, int] = 1
+    precision: int = 6
+
+    def to_dac(self):
+        dac = TimingDac()
+        tp = copy.copy(self)
+        tp.rc = round(self.rc, self.precision)
+        tp.a = round(dac.to_dac(self.a))
+        tp.bf = round(dac.to_dac(self.bf))
+        tp.m = round(dac.to_dac(self.m), self.precision)
+        tp.vbtx = round(dac.to_dac(self.vbtx))
+        return tp
+
+    def is_sane(self):
+        for v in [self.rc, self.a, self.bf, self.m, self.vbtx]:
+            try:
+                if not np.isfinite(v):
+                    return False
+            except TypeError:
+                return False
+        return True
+
+    def calc_index_from_setting(self, value):
+        if self.m != 0:
+            raise NotImplementedError("Error")
+
+        log_arg = 1 - (value - self.b) / self.a
+        arg = -np.log(log_arg) * self.rc
+        return np.round(arg)
+
+    def calc_time_from_setting(self, value):
+        return self.calc_index_from_setting(value) * self.dt_ps
+
+    def calc_dac_setting_from_index(self, i):
+        return calc_dac_setting(i, a=self.a, rc=self.rc, b=self.b, m=self.m)
+
+    def calc_dac_setting_from_time(self, t):
+        return calc_dac_setting(
+            round(t / self.dt_ps), a=self.a, rc=self.rc, b=self.b, m=self.m
+        )
+
+
 class TraceSettings(BaseModel):
     """ """
 
     npoints: int = Field(
         default=2500,
-        validation_alias=AliasChoices("npoints", "points", "NPOINTS", "get_n_points"),
+        validation_alias=AliasChoices(
+            "npoints", "points", "NPOINTS", "get_n_points"),
     )
     naverages: int = Field(
         default=2, validation_alias=AliasChoices("naverages", "AVG", "get_n_averages")
@@ -146,82 +238,45 @@ class TraceSettings(BaseModel):
     i_start: int = Field(
         default=0, validation_alias=AliasChoices("i_start", "ISTART", "get_i_start")
     )
-    vbtx: float = Field(
+    vbtx: Optional[int] = Field(
         default=None, validation_alias=AliasChoices("vbtx", "VBTX", "get_vbtx")
     )
-    ramp_mode: int = Field(
-        default=1, validation_alias=AliasChoices("ramp", "RAMP", "get_ramp_mode")
+
+    ramp_mode: Literal["RAMP1", "RAMP2", "BOTH"] = Field(
+        default="RAMP1", validation_alias=AliasChoices("ramp", "RAMP", "get_ramp_mode")
     )
-    ramp_model: RampModel = None
 
-    va: int = 60075
-    va0: int = 0
-    vb: int = 60075
-    vb0: int = 0
-    ra: float = 200
-    rb: float = 1000
-    c: float = 56e-12
-    ramp_adc_max: int = 2**16
-
-    @property
-    def ramp_vmax(self) -> float:
-        if self.ramp_mode == 1:
-            return self.va
-        if self.ramp_mode == 2:
-            return self.vb
-        if self.ramp_mode == 3:
-            return self.vb + (self.va - self.vb) * self.rb / (self.ra + self.rb)
-        raise ValueError(f"Unknown ramp mode {self.ramp_mode}")
-
-    @model_validator(mode="before")
-    def set_timing(cls, values: dict):
-        if not isinstance(values, dict):
-            return values  # in case someone passes a non-dict input
-
-        for field in ("TIMING", "get_timing_params"):
-            if field in values:
-                timing = values.pop(field)
-                a, rc, b, m = timing.strip().split(" ")
-                values["ramp_model"] = RampModel(
-                    a=float(a), rc=float(rc), b=float(b), m=float(m)
-                )
-                break
-        return values
+    # model_config = ConfigDict(extra="forbid")
 
     @model_validator(mode="after")
     def set_defaults(self):
         if self.vbtx is None:
             dac = TimingDac()
-            self.vbtx = dac.to_dac(1)
+            self.vbtx = int(dac.to_dac(1))
 
-        if self.ramp_model is None:
-            self.ramp_model = get_nominal_ramp_mode_model(self.ramp_mode)
+        # if self.ramp_model is None:
+        #    ramp_model = get_nominal_ramp_mode_model(self.ramp_mode)
+        #    self.ramp_a = ramp_model.a
+        #    self.ramp_rc = ramp_model.rc
+        #    self.ramp_bf = ramp_model.bf
+        #   self.ramp_m = ramp_model.m
 
         return self
 
 
-class Trace(BaseModel):
+def make_timing_params(params: MeasurementParams, dt_ps=5, npoints=1200):
     """
-    Struct holding the configuration and data for a set of data runs.
+    a is max voltage of ramp which is va, the power supply
+    want rc to be rc / dt so that we can use the index instead of the time
     """
-
-    settings: TraceSettings
-    rxdac: List[int]
-    trace: List[int]
-
-    @property
-    def y(self):
-        return self.trace
-
-    @property
-    def t_nominal(self):
-        return self.settings.ramp_model.calc_time(np.asarray(self.rxdac))
-
-    @property
-    def trace_volts(self):
-        vmax = self.settings.ramp_vmax()
-        gain: float = vmax / (self.settings.naverages * self.settings.ramp_adc_max)
-        return np.asarray(self.trace) * gain
+    return TimingParams(
+        npoints=npoints,
+        a=(params.va - params.calc_vramp(t=0)),
+        m=0,
+        dt_ps=dt_ps,
+        rc=params.rc / dt_ps,  # Time index units
+        b=params.calc_vramp(t=0),
+    )
 
 
 def get_nominal_ramp_mode_model(mode):
@@ -239,3 +294,57 @@ def get_nominal_ramp_mode_model(mode):
     1000*56
     """
     return modes[mode - 1]
+
+
+class Trace(BaseModel):
+    """
+    Struct holding the configuration and data for a set of data runs.
+    """
+
+    settings: TraceSettings
+    rxdac: List[int]
+    trace: List[int]
+
+    @property
+    def y(self):
+        return self.trace
+
+    # @property
+    # def t_nominal(self):
+    #    return impl.calc_time_from_voltage(np.asarray(self.rxdac))
+
+    # @property
+    # def trace_volts(self):
+    #    vmax = self.settings.ramp_vmax
+    #    gain: float = vmax / (self.settings.naverages * self.settings.ramp_adc_max)
+    #    return np.asarray(self.trace) * gain
+
+
+class CableMeasurement(BaseModel):
+    cable_time_ps: float
+    reflection_v: Optional[float] = None
+    trace: Optional[Trace] = None
+    accepted: bool = False
+
+    @model_validator(mode="after")
+    def check_voltage_or_trace(self):
+        if self.reflection_v is None and self.trace is None:
+            raise ValueError(
+                "Each trace must have either a voltage or a trace")
+        return self
+
+
+class CalibrationDataSet(BaseModel):
+    header: TraceSettings
+    runs: List[CableMeasurement]
+
+
+def write_calibration_data_set(path: Path, data: CalibrationDataSet):
+    with path.open("w") as f:
+        json.dump(data.model_dump(mode="json"), f, indent=2)
+
+
+def read_calibration_data_set(path: Path):
+    with path.open("r") as f:
+        kwargs = json.load(f)
+        return CalibrationDataSet(**kwargs)

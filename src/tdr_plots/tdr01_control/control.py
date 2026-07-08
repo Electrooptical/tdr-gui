@@ -1,26 +1,26 @@
 # control.py: Low level device control helper functions
 import logging
 import time
-from typing import List
 import pyvisa
+from typing import List, Union, Dict, Any, Literal
+import numpy as np
 
-from .common import (
-    Trace,
-    TraceSettings,
-)
 
-log_ = logging.getLogger("tdr_control")
+from .common import TimingParams, Trace, TraceSettings, TimingCoeffs
 
-g_rm = pyvisa.ResourceManager("@py")
+log_ = logging.getLogger("tdr_timing")
 
 
 class Device:
-    def __init__(self, resource: str, baudrate: int = 115200, timeout=5e3):
-        self.resource = resource
-        self.baudrate = baudrate
-        self.rm = pyvisa.ResourceManager()
-        self.dev: pyvisa.Resource = None
-        self.timeout = timeout
+    def __init__(
+        self,
+        resource: pyvisa.Resource,
+        baudrate: int = 115200,
+        timeout=5e3,
+    ):
+        self.dev: pyvisa.Resource = resource
+        self.baudrate: int = baudrate
+        self.timeout: float = timeout
 
     def __enter__(self):
         self.setup()
@@ -35,13 +35,22 @@ class Device:
         self.dev = None
 
     def setup(self):
-        self.dev = self.rm.open_resource(self.resource)
-        self.dev.baud_rate = 115200
-        self.dev.write("E 0")
+        resource_name = getattr(self.dev, "resource_name", "") or ""
+        if resource_name.startswith("ASRL"):
+            self.dev.baud_rate = self.baudrate
+        else:
+            # TCPIP SOCKET resources don't auto-detect line termination the
+            # way ASRL/INSTR resources do — set it explicitly to match the
+            # TDR01 firmware's "\n"-terminated line protocol.
+            self.dev.read_termination = "\n"
+            self.dev.write_termination = "\n"
         self.dev.timeout = self.timeout
-        self.flush()
 
     def flush(self):
+        log_.debug("flush")
+        self.dev.write("")
+        time.sleep(1)
+        # self.dev.clear()
         for f in [
             pyvisa.constants.BufferOperation.discard_read_buffer,
             pyvisa.constants.BufferOperation.discard_read_buffer_no_io,
@@ -53,6 +62,9 @@ class Device:
     def write(self, *args, **kwargs):
         return self.dev.write(*args, **kwargs)
 
+    def read(self, *args, **kwargs):
+        return self.dev.read(*args, **kwargs)
+
     def query(self, *args, **kwargs):
         return self.dev.query(*args, **kwargs)
 
@@ -63,49 +75,50 @@ class Device:
         self.flush()
 
 
-def take_trace(device: Device, npoints=None, command="TRACE") -> List[int]:
-    d = device.dev.query_ascii_values(command, converter="d", separator=",")
+def take_trace(
+    device: Device, npoints=None, command="TRACE?", tsleep: int = 0.1
+) -> np.array:
+    device.flush()
+    log_.debug(f"Take trace: {command}")
+    device.write(command)
+    dstr = device.read()
+    log_.debug(f"Read {bytes(dstr, 'utf-8')}")
+    log_.debug(f"Sleep {tsleep}s")
+    time.sleep(tsleep)
+    dstr = device.read()
+    log_.debug(f"Read {bytes(dstr, 'utf-8')}")
+    d = np.array(dstr.strip().split(","), dtype=int)
+    log_.debug(f"{d}")
+
     if npoints:
         assert len(d) == npoints
     return d
 
 
-def take_traces(
-    device, ramp_mode: int, settings: TraceSettings, ntraces=1, tsleep=0.1
-) -> List[Trace]:
-    npoints = settings.npoints
-    naverages = settings.naverages
-    i_start = settings.i_start
-    vbtx = settings.vbtx
-    ramp_mode = settings.ramp_mode
-    ramp_model = settings.ramp_model
-    spacing = settings.spacing
-    i_start = settings.i_start
-
-    assert ramp_model.a > 10
-
-    timing_params = f"{ramp_model.a} {ramp_model.rc} 0 0"
+def setup(device, settings: TraceSettings) -> dict[Any]:
     settings = (
-        ("E", 0),
-        ("RES", spacing),
-        ("ISTART", i_start),
-        ("POINTS", npoints),
-        ("TIMING", timing_params),
-        ("AVG", naverages),
-        ("VTX", vbtx),
-        ("RAMP", ramp_mode),
+        ("AVG", settings.naverages),
+        ("TIMING:RAMP", settings.ramp_mode),
+        ("TIMING:ISTART", settings.i_start),
+        ("TIMING:RESOLUTION", settings.spacing),
+        ("TIMING:POINTS", settings.npoints),
+        ("VTX", settings.vbtx),
     )
 
-    queries = (
-        "RES?",
-        "ISTART?",
-        "POINTS?",
-        "TIMING?",
-        "AVG?",
-        "VTX?",
-        "RAMP?",
+    queries = {
         "*IDN?",
-    )
+        "MEASURE:TEMPERATURE:TEMP?",
+        "TIMING:RAMP?",
+        "AVG?",
+        "TIMING:ISTART?",
+        "TIMING:RESOLUTION?",
+        "TIMING:POINTS?",
+        "TIMING:AMPLITUDE?",
+        "TIMING:RC?",
+        "TIMING:B?",
+        "TIMING:M?",
+        "VTX?",
+    }
 
     header = {}
 
@@ -113,49 +126,93 @@ def take_traces(
     for key, value in settings:
         command = f"{key} {value}\n"
         device.write(command)
-        device.flush()
         msg = f"{command}"
         log_.debug(msg)
 
+    device.flush()
     for key in queries:
+        log_.debug(key)
         header[key] = device.query(key).strip()
-        device.flush()
+
+    return header
+
+
+def take_traces(device, settings: TraceSettings, ntraces=1, tsleep=0.1) -> List[Trace]:
+    header = setup(device, settings)
+    npoints = settings.npoints
+    ramp_mode = settings.ramp_mode
 
     log_.info("settings: %s\nqueries %s", str(settings), str(header))
 
-    device.flush()
-    while True:
-        try:
-            rxpoints = take_trace(device, command="RXDAC?", npoints=npoints)
-            if len(rxpoints) != npoints:
-                msg = "rxpoints is wrong length, retaking %d/%d" % (
-                    len(rxpoints),
-                    npoints,
-                )
-                log_.error(msg)
-            break
-        except TimeoutError as e:
-            log_.error(e)
+    rxpoints = device.query_ascii_values("RXDAC?")
 
     traces = []
     for i in range(ntraces):
-        device.flush()
         time.sleep(tsleep)
-        log_.info("Starting Trace %d/%d. Ramp: %d", i + 1, ntraces, ramp_mode)
+        log_.info("Starting Trace %d/%d. Ramp: %s", i + 1, ntraces, str(ramp_mode))
         while True:
             try:
-                trace_data = take_trace(device, npoints=npoints)
-                if len(trace_data) != npoints:
-                    log_.error(
-                        "Trace is wrong length, retaking %d/%d",
-                        len(trace_data),
-                        npoints,
-                    )
-                    continue
+                trace_data = take_trace(device, npoints=npoints, command="TRACE?")
                 break
             except TimeoutError as e:
                 log_.error(e)
-        trace = Trace(rxdac=rxpoints, trace=trace_data,
-                      settings=dict(settings))
+        trace = Trace(rxdac=rxpoints, trace=trace_data, settings=dict(settings))
         traces.append(trace)
     return traces
+
+
+'''
+def run_calibration(
+    device: Device,
+    cal: CalibrationMeasurement,
+    fname: str,
+    settings: TraceSettings,
+) -> np.array:
+    """
+    FIXME: This should also read the 3.6VR and check it's levels.
+    """
+    data_run = take_calibration_trace(
+        device=device, fname=fname, settings=settings)
+
+    data_run.write_calibration_file(fname=fname)
+    rcs = []
+    pt: CalibrationTrace
+    for pt in data_run.build():
+        if len(pt.t_nominal):
+            rc, _ = calibration.calibration_fit(cal=cal)
+            rcs.append(rc)
+        else:
+            log_.warning("Skipping Trace, t_nominal is zero length")
+    return np.array(rcs)
+'''
+
+
+def set_timing(
+    device: Union[pyvisa.Resource, Device],
+    params: Union[TimingParams, TimingCoeffs],
+):
+    if not params.is_sane():
+        raise ValueError("TimingParams invalid: %s", str(params))
+    # assert params.a > 10  # Expects a value in dac units
+
+    settings = {
+        "TIMING:AMPLITUDE": params.a,
+        "TIMING:RC": round(params.rc, 2),
+        "TIMING:B": params.bf,
+        "TIMING:M": round(params.m, 2),
+    }
+    for key, value in settings.items():
+        command = f"{key} {value}\n"
+        device.write(command)
+
+
+def set_and_store_calibration(
+    device: Union[pyvisa.Resource, Device],
+    params: Union[TimingParams, TimingCoeffs],
+    ramp_mode: int,
+    slot=0,
+):
+    set_timing(device, params)
+    ramp_modes = ["A", "B", "C"]
+    slot_str = f"{ramp_modes[ramp_mode]}{slot}"
+    device.write(f"*SAV {slot_str}")

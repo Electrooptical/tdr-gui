@@ -109,39 +109,35 @@ class EmitterThread:
         self.thread = None
         self.stop_event = threading.Event()
 
+    def is_alive(self):
+        return self.thread and self.thread.is_alive()
+
     def trace_thread(self):
-        if self.device is None:
-            while not self.stop_event.is_set():
-                self.dummy_thread()
-
         while not self.stop_event.is_set():
-            trace = control.take_trace(self.device, npoints=self.settings.npoints)
-            trace = [int(pt) for pt in trace]
-            log_.debug(trace)
-            self.data_queue.put(trace)
-            time.sleep(self.sleep_time)
+            try:
+                trace = control.take_trace(
+                    self.device, npoints=self.settings.npoints)
+                trace = [int(pt) for pt in trace]
+                log_.debug(trace)
+                self.data_queue.put(trace)
+                time.sleep(self.sleep_time)
 
-    def dummy_thread(self):
-        """Simulate data reading from a serial port in a separate thread."""
-        # Simulate delay for reading from serial port (10Hz rate)
-        time.sleep(1)
-        # Simulate reading a random value (replace with serial read)
-        trace = [int(1 << 15) * random.random() for _ in range(self.settings.npoints)]
-        # Put data into the queue (either a real serial read or simulated data)
-        self.data_queue.put(trace)
-        # data_queue.put('x')  # Put data into the queue (either a real serial read or simulated data)
+            except (AssertionError, ValueError) as e:
+                log_.warning(str(e))
+                pass
 
     def stop(self):
-        if self.thread is not None and self.thread.is_alive():
+        if self.is_alive():
             log_.info("Stop thread")
             self.stop_event.set()
             if self.thread:
                 self.thread.join()
-            self.stop_event.clear()
             log_.info("Thread stopped")
 
     def start(self):
-        if self.thread is None or not self.thread.is_alive():
+        # self.stop()
+        self.stop_event.clear()
+        if not self.is_alive():
             log_.info("Start thread")
 
             self.thread = threading.Thread(target=self.trace_thread)
@@ -149,16 +145,6 @@ class EmitterThread:
                 True  # Ensure thread closes when the main program exits
             )
             self.thread.start()
-
-    def start_dummy(self, *args):
-        if self.thread is not None and self.thread.is_alive():
-            return
-
-        log_.info("Start thread")
-
-        self.thread = threading.Thread(target=self.dummy_thread)
-        self.thread.daemon = True  # Ensure thread closes when the main program exits
-        self.thread.start()
 
 
 class Scope:
@@ -295,7 +281,8 @@ class Scope:
 
         for line in self.stored_lines + [self.line]:
             y = line.get_ydata()
-            t = self.rxdac if self.plot_volts else np.asarray(range(len(y))) * self.dt
+            t = self.rxdac if self.plot_volts else np.asarray(
+                range(len(y))) * self.dt
             line.set_xdata(t)
 
         if self.xlim is None:
@@ -363,11 +350,7 @@ def run_monitor_plot(settings: TraceSettings, rxdac: List[int], device: Device):
 
     def handle_close(event):
         log_.info("Matplotlib window closing, stopping emitter thread…")
-        if (
-            emitter_thread
-            and emitter_thread.thread
-            and emitter_thread.thread.is_alive()
-        ):
+        if emitter_thread and emitter_thread.is_alive():
             emitter_thread.stop()
         plt.close("all")
 
@@ -391,8 +374,10 @@ def run_monitor_plot(settings: TraceSettings, rxdac: List[int], device: Device):
     cursor.connect("add", on_add_annotation)
 
     def on_start_stop(*args):
-        emitter_thread.stop()
-        emitter_thread.start()
+        if emitter_thread.is_alive():
+            emitter_thread.stop()
+        else:
+            emitter_thread.start()
 
     # Create a button to view stored traces
     buttons = {}
