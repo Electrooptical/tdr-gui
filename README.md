@@ -1,7 +1,7 @@
 # Live Plotting Tool for the TDR01
 
 ## Introduction
-The current tool is a basic live plotting function which communicates with the TDR01 serial interface with VISA.
+The current tool is a basic live plotting function which communicates with the TDR01 serial interface using pyVISA.
 The plotting function includes saving traces, storing traces for comparison, and cursor annotations.
 The TDR01 is a compact, rugged, and cost-effective Time Domain Reflectometer (TDR) with 60ps edges (90-10%).
 16 bit timing precision allows for single picosecond resolution.
@@ -14,19 +14,19 @@ The TDR01 is a compact, rugged, and cost-effective Time Domain Reflectometer (TD
 
 The device is a SCPI compliant interface (std V1999.0 4.2.1) over a 115.2k baud 8n1 3.3V UART.
 + `*IDN`: 
-+ `TRACE`: Starts a data trace and returns an `NPOINTS` long CSV of 12 bit values terminated with a new line (standard SCPI). If averaging is used then each point is the sum of the repeated runs. The scale factor to volts is then 3.6V/(`AVG` * 2^12).
++ `TRACE`: Starts a data trace and returns an `NPOINTS` long CSV of 12 bit values terminated with a new line (standard SCPI). If averaging is used then each point is the sum of the repeated runs. The scale factor to volts is then voltage = raw_value × (3.6 V) / (`AVG` × 4096)).
 + `RXDAC?`: Returns the dac settings of each point on the timing ramp. The peak ramp voltage is configurable with `DA` and `DB`
 + `NPOINTS`: Number of points in a trace.
 + `AVG`: Number of averages per point
 + `RES`: Spacing between consecutive points in integer picoseconds 
 + `ISTART`: Starting index of the trace. The start time is `RES`x`ISTART`.
-+ `PULSES`: Number if integration points per measurement
++ `PULSES`: Number of integration points per measurement.
 + `RAMP`: Choose the ramp time constant (1: Fast, 2: Slow)
 
 
 ## Installation & Use 
 The live trace plot is a python package in a TKinter environment.
-The tool has been tested on Windows 11 and Ubuntu 24.04 with Ubuntu as the primary platform.
+The tool has been tested on both Windows 11 and Ubuntu 24.04, with Ubuntu as the primary development platform.
 
 ### Ubuntu Dependencies
 ```bash
@@ -66,7 +66,7 @@ Options:
 ```
 
 ## Precompiled Binaries
-Precompiled binaries are available under releases.
+Precompiled binaries are available under [here](https://github.com/Electrooptical/tdr-gui/releases).
 
 ```bash
 dist/monitor_tdr --device /dev/ttyUSB0
