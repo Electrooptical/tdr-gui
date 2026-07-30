@@ -47,6 +47,12 @@ class TimingDac(Dac):
         super().__init__(vref=3.6, nbits=16)
 
 
+# ISTART and POINTS both index into the ramp's 16-bit DAC range, so a sweep
+# starting at i_start can't take more than (MAX_RAMP_INDEX - i_start) points
+# without walking off the end of that range.
+MAX_RAMP_INDEX = TimingDac().npoints
+
+
 @dataclass
 class QuadDac(Dac):
     def __init__(self):
@@ -238,6 +244,21 @@ class TraceSettings(BaseModel):
     i_start: int = Field(
         default=0, validation_alias=AliasChoices("i_start", "ISTART", "get_i_start")
     )
+    pulses: int = Field(
+        default=50, validation_alias=AliasChoices("pulses", "PULSES", "get_pulses")
+    )
+    sl_bias: int = Field(
+        default=0,
+        ge=0,
+        le=4095,
+        validation_alias=AliasChoices("sl_bias", "SLbias", "SLBIAS", "get_slbias"),
+    )
+    sb_bias: int = Field(
+        default=0,
+        ge=0,
+        le=4095,
+        validation_alias=AliasChoices("sb_bias", "SBbias", "SBBIAS", "get_sbbias"),
+    )
     vbtx: Optional[int] = Field(
         default=None, validation_alias=AliasChoices("vbtx", "VBTX", "get_vbtx")
     )
@@ -253,6 +274,15 @@ class TraceSettings(BaseModel):
         if self.vbtx is None:
             dac = TimingDac()
             self.vbtx = int(dac.to_dac(1))
+
+        max_npoints = max(1, MAX_RAMP_INDEX - self.i_start)
+        if self.npoints > max_npoints:
+            log_.warning(
+                "i_start=%d + npoints=%d exceeds the %d-index ramp range; "
+                "reducing npoints to %d",
+                self.i_start, self.npoints, MAX_RAMP_INDEX, max_npoints,
+            )
+            self.npoints = max_npoints
 
         # if self.ramp_model is None:
         #    ramp_model = get_nominal_ramp_mode_model(self.ramp_mode)

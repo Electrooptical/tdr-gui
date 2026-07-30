@@ -1,6 +1,8 @@
 # control.py: Low level device control helper functions
 import logging
+import threading
 import time
+from contextlib import nullcontext
 import pyvisa
 from typing import List, Union, Dict, Any, Literal
 import numpy as np
@@ -9,6 +11,25 @@ import numpy as np
 from .common import TimingParams, Trace, TraceSettings, TimingCoeffs
 
 log_ = logging.getLogger("tdr_timing")
+
+# Rough ASCII CSV throughput budget for a TRACE? read: at 115200 baud 8n1
+# (~11.5 kB/s) each point is ~5-6 bytes ("12345,"), i.e. ~0.6ms/point;
+# doubled here for margin and to cover the TCP UART-forwarding path too.
+_TRACE_TIMEOUT_BASE_MS = 5000
+_TRACE_TIMEOUT_MS_PER_POINT = 1.2
+
+# The TCP endpoint is a bridge onto a real 115200-baud UART (see README), and
+# it has little to no buffering on the write side: firing several SCPI
+# commands back-to-back over TCP with no pacing reliably wedges it - the
+# device stops responding to anything, including queries, until reconnected.
+# Confirmed against real hardware: 0s between writes reproduces the hang
+# every time; 20ms is reliably enough; this adds a safety margin.
+_INTER_COMMAND_DELAY_S = 0.03
+
+
+def trace_timeout_ms(npoints: int) -> float:
+    """Read timeout (ms) big enough to receive an npoints TRACE? response."""
+    return _TRACE_TIMEOUT_BASE_MS + npoints * _TRACE_TIMEOUT_MS_PER_POINT
 
 
 class Device:
@@ -21,6 +42,15 @@ class Device:
         self.dev: pyvisa.Resource = resource
         self.baudrate: int = baudrate
         self.timeout: float = timeout
+        # The live-view GUI runs trace acquisition on a background thread
+        # while the settings panel can issue queries/writes from the Tk main
+        # thread at the same time. Both share this one serial/TCP connection,
+        # so an unguarded interleaving (thread A writes a command, thread B's
+        # write lands before A's read consumes the response) desyncs the
+        # request/response stream until reconnect. Callers should hold this
+        # lock for an entire logical transaction (e.g. a whole take_trace()
+        # or setup()), not per write()/read() call.
+        self.lock = threading.RLock()
 
     def __enter__(self):
         self.setup()
@@ -45,6 +75,10 @@ class Device:
             self.dev.read_termination = "\n"
             self.dev.write_termination = "\n"
         self.dev.timeout = self.timeout
+
+    def set_timeout(self, timeout_ms: float) -> None:
+        self.timeout = timeout_ms
+        self.dev.timeout = timeout_ms
 
     def flush(self):
         log_.debug("flush")
@@ -78,63 +112,83 @@ class Device:
 def take_trace(
     device: Device, npoints=None, command="TRACE?", tsleep: int = 0.1
 ) -> np.array:
-    device.flush()
-    log_.debug(f"Take trace: {command}")
-    device.write(command)
-    dstr = device.read()
-    log_.debug(f"Read {bytes(dstr, 'utf-8')}")
-    log_.debug(f"Sleep {tsleep}s")
-    time.sleep(tsleep)
-    dstr = device.read()
-    log_.debug(f"Read {bytes(dstr, 'utf-8')}")
-    d = np.array(dstr.strip().split(","), dtype=int)
-    log_.debug(f"{d}")
+    with device.lock:
+        if npoints:
+            device.set_timeout(trace_timeout_ms(npoints))
+        device.flush()
+        log_.debug(f"Take trace: {command}")
+        device.write(command)
+        dstr = device.read()
+        log_.debug(f"Read {bytes(dstr, 'utf-8')}")
+        log_.debug(f"Sleep {tsleep}s")
+        time.sleep(tsleep)
+        dstr = device.read()
+        log_.debug(f"Read {bytes(dstr, 'utf-8')}")
+        d = np.array(dstr.strip().split(","), dtype=int)
+        log_.debug(f"{d}")
 
-    if npoints:
-        assert len(d) == npoints
-    return d
+        if npoints:
+            assert len(d) == npoints
+        return d
+
+
+def _unquote(value: str) -> str:
+    """Strip a matching pair of outer double-quotes. The TDR01 returns
+    string-valued SCPI responses (e.g. TIMING:RAMP?) quoted, e.g. '"RAMP1"';
+    left as-is this breaks any exact-match comparison against the bare
+    value ("RAMP1" != '"RAMP1"') and looks wrong when displayed."""
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        return value[1:-1]
+    return value
 
 
 def setup(device, settings: TraceSettings) -> dict[Any]:
-    settings = (
-        ("AVG", settings.naverages),
-        ("TIMING:RAMP", settings.ramp_mode),
-        ("TIMING:ISTART", settings.i_start),
-        ("TIMING:RESOLUTION", settings.spacing),
-        ("TIMING:POINTS", settings.npoints),
-        ("VTX", settings.vbtx),
-    )
+    with device.lock:
+        settings = (
+            ("AVG", settings.naverages),
+            ("TIMING:RAMP", settings.ramp_mode),
+            ("TIMING:ISTART", settings.i_start),
+            ("TIMING:RESOLUTION", settings.spacing),
+            ("TIMING:POINTS", settings.npoints),
+            ("PULSES", settings.pulses),
+            ("VTX", settings.vbtx),
+            ("SLbias", settings.sl_bias),
+            ("SBbias", settings.sb_bias),
+        )
 
-    queries = {
-        "*IDN?",
-        "MEASURE:TEMPERATURE:TEMP?",
-        "TIMING:RAMP?",
-        "AVG?",
-        "TIMING:ISTART?",
-        "TIMING:RESOLUTION?",
-        "TIMING:POINTS?",
-        "TIMING:AMPLITUDE?",
-        "TIMING:RC?",
-        "TIMING:B?",
-        "TIMING:M?",
-        "VTX?",
-    }
+        queries = {
+            "*IDN?",
+            "MEASURE:TEMPERATURE:TEMP?",
+            "TIMING:RAMP?",
+            "AVG?",
+            "TIMING:ISTART?",
+            "TIMING:RESOLUTION?",
+            "TIMING:POINTS?",
+            "PULSES?",
+            "TIMING:AMPLITUDE?",
+            "TIMING:RC?",
+            "TIMING:B?",
+            "TIMING:M?",
+            "VTX?",
+            "SLbias?",
+            "SBbias?",
+        }
 
-    header = {}
+        header = {}
 
-    device.flush()
-    for key, value in settings:
-        command = f"{key} {value}\n"
-        device.write(command)
-        msg = f"{command}"
-        log_.debug(msg)
+        device.flush()
+        for key, value in settings:
+            command = f"{key} {value}"
+            device.write(command)
+            log_.debug(command)
+            time.sleep(_INTER_COMMAND_DELAY_S)
 
-    device.flush()
-    for key in queries:
-        log_.debug(key)
-        header[key] = device.query(key).strip()
+        device.flush()
+        for key in queries:
+            log_.debug(key)
+            header[key] = _unquote(device.query(key).strip())
 
-    return header
+        return header
 
 
 def take_traces(device, settings: TraceSettings, ntraces=1, tsleep=0.1) -> List[Trace]:
@@ -154,7 +208,9 @@ def take_traces(device, settings: TraceSettings, ntraces=1, tsleep=0.1) -> List[
             try:
                 trace_data = take_trace(device, npoints=npoints, command="TRACE?")
                 break
-            except TimeoutError as e:
+            except (pyvisa.errors.VisaIOError, TimeoutError) as e:
+                # pyvisa raises VisaIOError (not the builtin TimeoutError) on
+                # a read timeout, so this previously never caught anything.
                 log_.error(e)
         trace = Trace(rxdac=rxpoints, trace=trace_data, settings=dict(settings))
         traces.append(trace)
@@ -201,9 +257,12 @@ def set_timing(
         "TIMING:B": params.bf,
         "TIMING:M": round(params.m, 2),
     }
-    for key, value in settings.items():
-        command = f"{key} {value}\n"
-        device.write(command)
+    lock = getattr(device, "lock", None)
+    with lock if lock is not None else nullcontext():
+        for key, value in settings.items():
+            command = f"{key} {value}"
+            device.write(command)
+            time.sleep(_INTER_COMMAND_DELAY_S)
 
 
 def set_and_store_calibration(

@@ -30,6 +30,25 @@ class Setup(BaseModel):
 
 log_ = logging.getLogger("monitor_tdr")
 
+# Every logger this package actually writes to. control.py and common.py use
+# their own logger names, so bumping just "monitor_tdr" (as this used to do)
+# silently drops their device-write/read debug lines.
+_PACKAGE_LOGGERS = ("monitor_tdr", "tdr_timing", "tdr_control")
+
+
+def _configure_logging(verbosity: int) -> None:
+    """0 (default): WARNING. -v: INFO. -vv: DEBUG (every SCPI command written
+    and every raw response read). -vvv or more: also enables pyvisa's own
+    byte-level transport logging, useful for diagnosing issues in the
+    read/write termination handling itself (e.g. over TCP)."""
+    level = {0: logging.WARNING, 1: logging.INFO}.get(verbosity, logging.DEBUG)
+    logging.basicConfig()
+    logging.getLogger().setLevel(level)
+    for name in _PACKAGE_LOGGERS:
+        logging.getLogger(name).setLevel(level)
+    if verbosity >= 3:
+        pyvisa.log_to_screen(logging.DEBUG)
+
 
 def list_serial_ports():
     """List available COM ports in Windows and Linux"""
@@ -102,6 +121,14 @@ def build_resource_name(device_str: Optional[str], tcp_port: int = DEFAULT_TCP_P
 @click.option(
     "--sleep", "sleep_time", type=float, default=2, help="Sleep time in between traces"
 )
+@click.option(
+    "-v", "--verbose", "verbosity", count=True,
+    help=(
+        "Increase log verbosity: -v for INFO, -vv for DEBUG including every "
+        "SCPI command written/read, -vvv also enables pyvisa's raw byte-level "
+        "transport logging."
+    ),
+)
 @click.command()
 def cli_main(
     device_str,
@@ -117,10 +144,9 @@ def cli_main(
     a,
     dummy,
     sleep_time,
+    verbosity,
 ):
-    logging.basicConfig()
-    logging.getLogger().setLevel(logging.INFO)
-    log_.setLevel(logging.DEBUG)
+    _configure_logging(verbosity)
 
     npoints = int(round(maxtime / spacing))
 
@@ -162,7 +188,7 @@ def cli_main(
         log_.info(f"header: {header}")
         # , points=settings.npoints)
         rxdac = device.query_ascii_values("RXDAC?")
-        run_monitor_plot(settings=settings, rxdac=rxdac, device=device)
+        run_monitor_plot(settings=settings, rxdac=rxdac, device=device, header=header)
 
 
 def main():
